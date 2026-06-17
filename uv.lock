@@ -410,13 +410,6 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "respx" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -430,13 +423,9 @@ requires-dist = [
     { name = "httpx" },
     { name = "mcp", extras = ["cli"] },
     { name = "pydantic" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "pyyaml" },
-    { name = "respx", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"] },
 ]
-provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
