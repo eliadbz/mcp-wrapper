@@ -156,7 +156,7 @@ def _make_handler(
         response: httpx.Response = await client.request(
             method=method,
             url=url,
-            params=query_dict if query_dict else None,
+            params=({k: v for k, v in query_dict.items() if v is not None} or None),
             json=body_value,
         )
 

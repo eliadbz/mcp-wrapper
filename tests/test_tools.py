@@ -796,3 +796,62 @@ class TestQueryParamNamedRequestBodyWithBodySchema:
         sent_body = json.loads(route.calls.last.request.content)
         assert sent_body == {"key": "body-value"}
         assert result == '{"ok":true}'
+
+
+# ---------------------------------------------------------------------------
+# Regression test — Fix 1: optional None query params must not appear in URL
+# ---------------------------------------------------------------------------
+
+
+class TestOptionalQueryParamOmittedWhenNone:
+    """Regression: omitting an optional query param must not send ?param= in the URL.
+
+    When an MCP caller supplies only the required path param and omits the
+    optional query param, the handler receives None for the optional kwarg.
+    The fix filters None values from query_dict so httpx never serializes them
+    as empty strings in the query string.
+    """
+
+    @pytest.mark.asyncio
+    async def test_omitted_optional_query_param_not_in_url(self):
+        """Omitting an optional query param must produce a URL with no query string."""
+        mcp = make_mcp()
+        async with make_client() as client:
+            operation = OperationDef(
+                tool_name="get_item_optional_page",
+                method="get",
+                path="/items/{item_id}",
+                description="Get an item, optionally filtered by page",
+                path_params=[
+                    ParamDef(
+                        name="item_id",
+                        required=True,
+                        schema={"type": "string"},
+                        description="The item identifier",
+                    )
+                ],
+                query_params=[
+                    ParamDef(
+                        name="page",
+                        required=False,
+                        schema={"type": "integer"},
+                        description="Optional page number",
+                    )
+                ],
+                body_schema=None,
+            )
+            register_tool(mcp, operation, client)
+
+            with respx.mock:
+                route = respx.get(f"{BASE_URL}/items/123").mock(
+                    return_value=httpx.Response(200, text='{"id":"123"}')
+                )
+                # Call without the optional 'page' query param.
+                result = await call(mcp, "get_item_optional_page", {"item_id": "123"})
+
+        assert route.called
+        url_str = str(route.calls.last.request.url)
+        # The optional param must NOT be present in the URL at all.
+        assert "page" not in url_str
+        assert "?" not in url_str
+        assert result == '{"id":"123"}'
