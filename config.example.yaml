@@ -1,0 +1,27 @@
+# config.example.yaml — copy to config.yaml and customize
+servers:
+  # Example 1: Bearer token auth
+  my-api:
+    openapi_url: "http://my-api-host/openapi.json"
+    base_url: "http://my-api-host"
+    auth:
+      type: bearer
+      token: "your-bearer-token-here"
+
+  # Example 2: API key header auth
+  another-api:
+    openapi_url: "http://another-api/openapi.json"
+    base_url: "http://another-api"
+    auth:
+      type: api_key
+      header: "X-API-Key"
+      value: "your-api-key-here"
+
+  # Example 3: HTTP Basic auth
+  basic-api:
+    openapi_url: "http://basic-api/openapi.json"
+    base_url: "http://basic-api"
+    auth:
+      type: basic
+      username: "your-username"
+      password: "your-password"
