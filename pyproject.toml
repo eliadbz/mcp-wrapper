@@ -16,13 +16,6 @@ dependencies = [
     "uvicorn[standard]",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-asyncio",
-    "respx",
-]
-
 [tool.uv]
 package = true
 
