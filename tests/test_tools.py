@@ -153,7 +153,7 @@ class TestRegisterToolRegistration:
         assert "q" in tool.parameters.get("properties", {})
 
     def test_input_schema_contains_body_when_present(self):
-        """The registered tool's inputSchema should include 'body' when operation has a body."""
+        """The registered tool's inputSchema should include '__body__' when operation has a body."""
         mcp = make_mcp()
         client = httpx.AsyncClient(base_url=BASE_URL)
         body_schema = {"type": "object", "properties": {"name": {"type": "string"}}}
@@ -171,8 +171,8 @@ class TestRegisterToolRegistration:
 
         tool = mcp._tool_manager.get_tool("create_item")
         assert tool is not None
-        assert "request_body" in tool.parameters.get("properties", {})
-        assert "request_body" in tool.parameters.get("required", [])
+        assert "__body__" in tool.parameters.get("properties", {})
+        assert "__body__" in tool.parameters.get("required", [])
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ class TestRegisterToolHandlerPost:
                 route = respx.post(f"{BASE_URL}/users").mock(
                     return_value=httpx.Response(201, text='{"id":99}')
                 )
-                result = await call(mcp, "create_user", {"request_body": {"name": "Alice"}})
+                result = await call(mcp, "create_user", {"__body__": {"name": "Alice"}})
 
         assert route.called
         import json
@@ -344,7 +344,7 @@ class TestRegisterToolHandlerPost:
                 route = respx.put(f"{BASE_URL}/users/5").mock(
                     return_value=httpx.Response(200, text='{"updated":true}')
                 )
-                result = await call(mcp, "update_user", {"id": "5", "request_body": {"name": "Bob"}})
+                result = await call(mcp, "update_user", {"id": "5", "__body__": {"name": "Bob"}})
 
         assert route.called
         assert "/users/5" in str(route.calls.last.request.url)
@@ -398,7 +398,7 @@ class TestRegisterToolHandlerErrors:
                 respx.post(f"{BASE_URL}/items").mock(
                     return_value=httpx.Response(400, text="invalid input")
                 )
-                result = await call(mcp, "bad_request", {"request_body": {}})
+                result = await call(mcp, "bad_request", {"__body__": {}})
 
         assert result == "HTTP 400: invalid input"
 
@@ -630,3 +630,169 @@ class TestQueryParamNamedRequestBody:
         # The param must appear in the query string, not be silently dropped.
         assert "request_body=my-filter" in url_str
         assert result == '{"results":[]}'
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — Fix 2 (safe-name collisions and __body__ sentinel)
+# ---------------------------------------------------------------------------
+
+
+class TestSafeNameCollision:
+    """Regression: two params that sanitize to the same safe identifier must
+    not produce a SyntaxError and both values must be forwarded correctly."""
+
+    def test_collision_registers_without_crash(self):
+        """x-foo and x_foo both sanitize to x_foo; register_tool must not raise."""
+        mcp = make_mcp()
+        client = httpx.AsyncClient(base_url=BASE_URL)
+        operation = OperationDef(
+            tool_name="collision_op",
+            method="get",
+            path="/collision",
+            description="Operation with colliding safe param names",
+            path_params=[],
+            query_params=[
+                ParamDef(
+                    name="x-foo",
+                    required=False,
+                    schema={"type": "string"},
+                    description="Hyphenated param that sanitizes to x_foo",
+                ),
+                ParamDef(
+                    name="x_foo",
+                    required=False,
+                    schema={"type": "string"},
+                    description="Param already named x_foo — collides with x-foo after sanitization",
+                ),
+            ],
+            body_schema=None,
+        )
+        # Must not raise SyntaxError even though both names sanitize to x_foo.
+        register_tool(mcp, operation, client)
+
+        tool = mcp._tool_manager.get_tool("collision_op")
+        assert tool is not None
+        # Both original param names must appear in the schema properties.
+        props = tool.parameters.get("properties", {})
+        assert "x-foo" in props
+        assert "x_foo" in props
+
+    @pytest.mark.asyncio
+    async def test_collision_both_params_forwarded(self):
+        """Both x-foo and x_foo must be sent as separate query string parameters."""
+        mcp = make_mcp()
+        async with make_client() as client:
+            operation = OperationDef(
+                tool_name="collision_op2",
+                method="get",
+                path="/collision",
+                description="Operation with colliding safe param names",
+                path_params=[],
+                query_params=[
+                    ParamDef(
+                        name="x-foo",
+                        required=False,
+                        schema={"type": "string"},
+                        description="Hyphenated param",
+                    ),
+                    ParamDef(
+                        name="x_foo",
+                        required=False,
+                        schema={"type": "string"},
+                        description="Underscore param",
+                    ),
+                ],
+                body_schema=None,
+            )
+            register_tool(mcp, operation, client)
+
+            with respx.mock:
+                route = respx.get(f"{BASE_URL}/collision").mock(
+                    return_value=httpx.Response(200, text="ok")
+                )
+                result = await call(
+                    mcp, "collision_op2", {"x-foo": "hyphen-value", "x_foo": "underscore-value"}
+                )
+
+        assert route.called
+        url_str = str(route.calls.last.request.url)
+        assert "x-foo=hyphen-value" in url_str
+        assert "x_foo=underscore-value" in url_str
+        assert result == "ok"
+
+
+class TestQueryParamNamedRequestBodyWithBodySchema:
+    """Regression: a query param named 'request_body' combined with a body_schema
+    must not produce a SyntaxError (duplicate 'request_body' in all_param_names)
+    and both must be forwarded correctly via the __body__ sentinel fix."""
+
+    def test_request_body_param_with_body_schema_registers_without_crash(self):
+        """register_tool must not raise when a query param is named 'request_body'
+        and body_schema is also present (previously caused duplicate param name)."""
+        mcp = make_mcp()
+        client = httpx.AsyncClient(base_url=BASE_URL)
+        operation = OperationDef(
+            tool_name="dual_body_op",
+            method="post",
+            path="/dual",
+            description="Operation with both a request_body query param and a body schema",
+            path_params=[],
+            query_params=[
+                ParamDef(
+                    name="request_body",
+                    required=False,
+                    schema={"type": "string"},
+                    description="Query param coincidentally named request_body",
+                ),
+            ],
+            body_schema={"type": "object", "properties": {"key": {"type": "string"}}},
+        )
+        # Must not raise SyntaxError — the sentinel is now __body__, not request_body.
+        register_tool(mcp, operation, client)
+
+        tool = mcp._tool_manager.get_tool("dual_body_op")
+        assert tool is not None
+        props = tool.parameters.get("properties", {})
+        assert "request_body" in props   # the query param
+        assert "__body__" in props       # the body sentinel
+
+    @pytest.mark.asyncio
+    async def test_request_body_param_and_body_both_forwarded(self):
+        """The query param 'request_body' and the JSON body must both be sent."""
+        mcp = make_mcp()
+        async with make_client() as client:
+            operation = OperationDef(
+                tool_name="dual_body_op2",
+                method="post",
+                path="/dual",
+                description="Operation with request_body query param and body schema",
+                path_params=[],
+                query_params=[
+                    ParamDef(
+                        name="request_body",
+                        required=False,
+                        schema={"type": "string"},
+                        description="Query param named request_body",
+                    ),
+                ],
+                body_schema={"type": "object", "properties": {"key": {"type": "string"}}},
+            )
+            register_tool(mcp, operation, client)
+
+            with respx.mock:
+                route = respx.post(f"{BASE_URL}/dual").mock(
+                    return_value=httpx.Response(200, text='{"ok":true}')
+                )
+                result = await call(
+                    mcp,
+                    "dual_body_op2",
+                    {"request_body": "qparam-value", "__body__": {"key": "body-value"}},
+                )
+
+        import json
+        assert route.called
+        url_str = str(route.calls.last.request.url)
+        assert "request_body=qparam-value" in url_str
+        sent_body = json.loads(route.calls.last.request.content)
+        assert sent_body == {"key": "body-value"}
+        assert result == '{"ok":true}'

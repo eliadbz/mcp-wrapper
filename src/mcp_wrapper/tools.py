@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import keyword
 import re
-from typing import Any, Annotated
+from typing import Any
 
 import httpx
 from pydantic import ConfigDict, Field, create_model
@@ -25,19 +25,51 @@ def _safe_identifier(name: str) -> str:
     """Convert an arbitrary string into a valid Python identifier.
 
     Replaces any character that is not alphanumeric or underscore with ``_``,
-    then prefixes with ``p_`` if the result starts with a digit or is a
-    Python keyword.
+    then prefixes with ``p_`` if the result starts with a digit, an underscore,
+    or is a Python keyword.  The leading-underscore guard prevents FastMCP from
+    rejecting the parameter name (FastMCP raises InvalidSignature for any
+    parameter whose name begins with ``_``).
 
     Args:
         name: The original parameter name (may contain hyphens, dots, etc.).
 
     Returns:
-        A string that is a valid Python identifier.
+        A string that is a valid Python identifier and does not start with ``_``.
     """
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", name)
-    if not safe or safe[0].isdigit() or keyword.iskeyword(safe):
+    if not safe or safe[0].isdigit() or safe[0] == "_" or keyword.iskeyword(safe):
         safe = f"p_{safe}"
     return safe
+
+
+def _build_safe_mapping(param_names: list[str]) -> list[tuple[str, str]]:
+    """Return a deduplicated list of (safe_python_name, original_name) pairs.
+
+    For each original name, ``_safe_identifier`` produces a Python-safe alias.
+    If two names produce the same alias (e.g. ``x-foo`` and ``x_foo`` both
+    become ``x_foo``), the later duplicates are suffixed with ``_1``, ``_2``,
+    etc. to keep each alias unique.
+
+    Args:
+        param_names: Ordered list of original parameter names.
+
+    Returns:
+        A list of ``(safe_alias, original_name)`` tuples in the same order,
+        with safe aliases guaranteed to be unique across the list.
+    """
+    raw: list[tuple[str, str]] = [(_safe_identifier(p), p) for p in param_names]
+
+    seen: dict[str, int] = {}
+    deduped: list[tuple[str, str]] = []
+    for safe, orig in raw:
+        if safe in seen:
+            seen[safe] += 1
+            safe = f"{safe}_{seen[safe]}"
+        else:
+            seen[safe] = 0
+        deduped.append((safe, orig))
+
+    return deduped
 
 
 def _build_input_schema(operation: OperationDef) -> dict:
@@ -45,6 +77,11 @@ def _build_input_schema(operation: OperationDef) -> dict:
 
     Combines path params, query params, and body into a single object schema
     that describes what arguments the tool handler accepts.
+
+    The request body, if present, is represented under the key ``"__body__"``.
+    This sentinel cannot appear as a valid OpenAPI parameter name (OpenAPI
+    parameter names may not use dunder-style names), so it never collides with
+    real path or query params.
     """
     properties: dict = {}
     required: list[str] = []
@@ -55,8 +92,8 @@ def _build_input_schema(operation: OperationDef) -> dict:
             required.append(p.name)
 
     if operation.body_schema is not None:
-        properties["request_body"] = operation.body_schema
-        required.append("request_body")
+        properties["__body__"] = operation.body_schema
+        required.append("__body__")
 
     schema: dict = {"type": "object", "properties": properties}
     if required:
@@ -71,7 +108,7 @@ def _make_handler(
     path_param_names: frozenset,
     query_param_names: frozenset,
     has_body: bool,
-    all_param_names: list[str],
+    safe_to_original: list[tuple[str, str]],
 ) -> Any:
     """Build an async handler function with an explicit named-param signature.
 
@@ -81,9 +118,10 @@ def _make_handler(
     that its argument validation model accepts (and passes through) those params.
 
     Parameter names from OpenAPI specs may contain characters that are illegal
-    in Python identifiers (e.g. hyphens, dots). A safe-name mapping is built
-    so the exec'd signature uses valid identifiers while the original names are
-    preserved when forwarding kwargs to ``_core``.
+    in Python identifiers (e.g. hyphens, dots). The ``safe_to_original`` mapping
+    (built by ``_build_safe_mapping``) provides unique, FastMCP-safe aliases;
+    the exec'd handler translates them back to original names when calling
+    ``_core``.
 
     Args:
         client: The shared httpx.AsyncClient to use for requests.
@@ -91,9 +129,10 @@ def _make_handler(
         path_template: URL path template with ``{param}`` placeholders.
         path_param_names: Set of parameter names that belong in the path.
         query_param_names: Set of parameter names that belong in the query string.
-        has_body: Whether to treat a ``request_body`` kwarg as the JSON request body.
-        all_param_names: Ordered list of all parameter names for the signature.
-            The body param, if present, must be ``"request_body"``.
+        has_body: Whether to treat a ``__body__`` kwarg as the JSON request body.
+        safe_to_original: Ordered list of ``(safe_alias, original_name)`` pairs
+            produced by ``_build_safe_mapping``.  The body sentinel, if present,
+            must have original name ``"__body__"``.
 
     Returns:
         An async function suitable for passing to ``mcp.add_tool()``.
@@ -109,7 +148,7 @@ def _make_handler(
                 path_dict[key] = value
             elif key in query_param_names:
                 query_dict[key] = value
-            elif key == "request_body" and has_body:
+            elif key == "__body__" and has_body:
                 body_value = value
 
         url = path_template.format_map(path_dict)
@@ -129,18 +168,7 @@ def _make_handler(
     # Build a wrapper with an explicit named-parameter signature so that
     # FastMCP's argument validation model accepts the individual param names
     # rather than a single ``**kwargs`` field.
-    #
-    # OpenAPI param names (e.g. "x-api-version") can contain characters that
-    # are not valid in Python identifiers.  We sanitize each name to a safe
-    # Python identifier and emit the original name as the dict key so _core
-    # receives the correct original names.
-    if all_param_names:
-        # Build a mapping: safe_python_name -> original_param_name.
-        # For the exec'd signature we use safe names; for the kwargs dict we
-        # use original names so _core can match against path/query param sets.
-        safe_to_original: list[tuple[str, str]] = [
-            (_safe_identifier(p), p) for p in all_param_names
-        ]
+    if safe_to_original:
         param_list = ", ".join(f"{safe}=None" for safe, _ in safe_to_original)
         kwargs_build = (
             "{"
@@ -182,14 +210,20 @@ def register_tool(
     query_param_names = frozenset(p.name for p in operation.query_params)
     has_body = operation.body_schema is not None
 
-    # Collect all parameter names in a stable order: path → query → request_body.
-    # "request_body" is used instead of "body" to avoid collision with any
-    # OpenAPI parameter that happens to be named "body".
+    # Collect all parameter names in a stable order: path → query → __body__.
+    # "__body__" is used as the body sentinel because dunder-style names cannot
+    # appear as valid OpenAPI parameter names, preventing any collision with real
+    # path or query params.  _safe_identifier converts "__body__" to "p___body__"
+    # (no leading underscore) so FastMCP's InvalidSignature guard is satisfied.
     all_param_names: list[str] = (
         [p.name for p in operation.path_params]
         + [p.name for p in operation.query_params]
-        + (["request_body"] if has_body else [])
+        + (["__body__"] if has_body else [])
     )
+
+    # Build the deduplicated safe-name mapping once; share it with both
+    # _make_handler (for the exec'd signature) and the alias-patch block below.
+    safe_to_original = _build_safe_mapping(all_param_names)
 
     handler = _make_handler(
         client=client,
@@ -198,7 +232,7 @@ def register_tool(
         path_param_names=path_param_names,
         query_param_names=query_param_names,
         has_body=has_body,
-        all_param_names=all_param_names,
+        safe_to_original=safe_to_original,
     )
 
     # Register using FastMCP's add_tool (Option A from the brief).
@@ -223,29 +257,26 @@ def register_tool(
         # immutability guard and inject the custom schema.
         object.__setattr__(registered_tool, "parameters", input_schema)
 
-        # When any param name is not a valid Python identifier (e.g. "x-api-version"),
-        # the exec'd handler uses a safe alias (e.g. "x_api_version") but FastMCP's
-        # MCP clients will pass args keyed by the original OpenAPI name.
-        # Rebuild the arg_model with proper Pydantic Field aliases so validation
-        # correctly maps "x-api-version" → x_api_version field.
-        needs_alias_patch = any(
-            _safe_identifier(name) != name for name in all_param_names
-        )
+        # When any param name differs from its safe alias (e.g. "x-api-version"
+        # → "x_api_version", or "__body__" → "p___body__"), FastMCP's MCP
+        # clients will pass args keyed by the original name.  Rebuild the
+        # arg_model with proper Pydantic Field aliases so validation correctly
+        # maps original names to the safe alias fields used by _handler.
+        needs_alias_patch = any(safe != orig for safe, orig in safe_to_original)
         if needs_alias_patch:
             patched_fields: dict[str, Any] = {}
-            for orig_name in all_param_names:
-                safe_name = _safe_identifier(orig_name)
-                if safe_name != orig_name:
-                    # validation_alias: Pydantic accepts the original (non-identifier)
-                    # name when validating incoming args, but the field name (safe
-                    # Python identifier) is used for output by model_dump_one_level,
-                    # so _handler receives valid Python keyword arguments.
-                    patched_fields[safe_name] = (
+            for safe, orig in safe_to_original:
+                if safe != orig:
+                    # validation_alias lets Pydantic accept the original name
+                    # when validating incoming args; the field name (safe alias)
+                    # is used by model_dump_one_level so _handler receives valid
+                    # Python keyword arguments.
+                    patched_fields[safe] = (
                         Any,
-                        Field(default=None, validation_alias=orig_name),
+                        Field(default=None, validation_alias=orig),
                     )
                 else:
-                    patched_fields[safe_name] = (Any, Field(default=None))
+                    patched_fields[safe] = (Any, Field(default=None))
             new_arg_model = create_model(
                 "_handlerArguments",
                 __base__=ArgModelBase,
