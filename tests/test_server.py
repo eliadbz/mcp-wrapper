@@ -7,7 +7,7 @@ register_tool behaviour when testing failure paths.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -331,8 +331,17 @@ class TestBuildMcpServerToolRegistrationFailure:
             },
         }
 
-        # We test that non-failing tools ARE registered; we do NOT patch register_tool
-        # here — we let the real function run and verify all three land on the MCP instance.
+        from mcp_wrapper.tools import register_tool as real_register_tool
+
+        call_count = 0
+
+        def failing_first_register(mcp, operation, client):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("simulated registration failure")
+            real_register_tool(mcp, operation, client)
+
         with respx.mock:
             respx.get(OPENAPI_URL).mock(
                 return_value=httpx.Response(
@@ -341,12 +350,17 @@ class TestBuildMcpServerToolRegistrationFailure:
                     headers={"content-type": "application/json"},
                 )
             )
-            result = await build_mcp_server(config)
+            with patch(
+                "mcp_wrapper.server.register_tool",
+                side_effect=failing_first_register,
+            ):
+                result = await build_mcp_server(config)
 
         assert result is not None
         mcp, client = result
         tool_names = {t.name for t in mcp._tool_manager.list_tools()}
-        assert "opA" in tool_names
+        # First tool failed, so only the 2 remaining tools should be registered
+        assert len(tool_names) == 2
         assert "opB" in tool_names
         assert "opC" in tool_names
         await client.aclose()
