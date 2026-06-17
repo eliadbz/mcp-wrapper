@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-wrapper"
+version = "0.1.0"
+description = "A Python proxy server that wraps third-party REST APIs as MCP tools"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]",
+    "fastapi",
+    "httpx",
+    "pydantic",
+    "pyyaml",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+]
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_wrapper"]
