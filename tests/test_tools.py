@@ -171,8 +171,8 @@ class TestRegisterToolRegistration:
 
         tool = mcp._tool_manager.get_tool("create_item")
         assert tool is not None
-        assert "body" in tool.parameters.get("properties", {})
-        assert "body" in tool.parameters.get("required", [])
+        assert "request_body" in tool.parameters.get("properties", {})
+        assert "request_body" in tool.parameters.get("required", [])
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ class TestRegisterToolHandlerPost:
                 route = respx.post(f"{BASE_URL}/users").mock(
                     return_value=httpx.Response(201, text='{"id":99}')
                 )
-                result = await call(mcp, "create_user", {"body": {"name": "Alice"}})
+                result = await call(mcp, "create_user", {"request_body": {"name": "Alice"}})
 
         assert route.called
         import json
@@ -344,7 +344,7 @@ class TestRegisterToolHandlerPost:
                 route = respx.put(f"{BASE_URL}/users/5").mock(
                     return_value=httpx.Response(200, text='{"updated":true}')
                 )
-                result = await call(mcp, "update_user", {"id": "5", "body": {"name": "Bob"}})
+                result = await call(mcp, "update_user", {"id": "5", "request_body": {"name": "Bob"}})
 
         assert route.called
         assert "/users/5" in str(route.calls.last.request.url)
@@ -398,7 +398,7 @@ class TestRegisterToolHandlerErrors:
                 respx.post(f"{BASE_URL}/items").mock(
                     return_value=httpx.Response(400, text="invalid input")
                 )
-                result = await call(mcp, "bad_request", {"body": {}})
+                result = await call(mcp, "bad_request", {"request_body": {}})
 
         assert result == "HTTP 400: invalid input"
 
@@ -514,3 +514,119 @@ class TestRegisterToolClientNotClosed:
         # Client should still be usable (is_closed reflects transport state).
         assert not client.is_closed
         await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — Bug 1 and Bug 2
+# ---------------------------------------------------------------------------
+
+
+class TestHyphenatedParamName:
+    """Regression: param names with hyphens (e.g. x-api-version) must not
+    crash exec and must be forwarded correctly in the HTTP request."""
+
+    def test_hyphenated_param_registers_without_error(self):
+        """register_tool must not raise SyntaxError for a hyphenated param name."""
+        mcp = make_mcp()
+        client = httpx.AsyncClient(base_url=BASE_URL)
+        operation = OperationDef(
+            tool_name="versioned_get",
+            method="get",
+            path="/versioned",
+            description="Versioned endpoint",
+            path_params=[],
+            query_params=[
+                ParamDef(
+                    name="x-api-version",
+                    required=True,
+                    schema={"type": "string"},
+                    description="API version header-style query param",
+                )
+            ],
+            body_schema=None,
+        )
+        # Must not raise SyntaxError or any other exception.
+        register_tool(mcp, operation, client)
+
+        tool = mcp._tool_manager.get_tool("versioned_get")
+        assert tool is not None
+        # The input schema should preserve the original param name as the key.
+        assert "x-api-version" in tool.parameters.get("properties", {})
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_param_forwarded_in_request(self):
+        """The hyphenated query param value must appear in the actual HTTP request."""
+        mcp = make_mcp()
+        async with make_client() as client:
+            operation = OperationDef(
+                tool_name="versioned_get2",
+                method="get",
+                path="/versioned",
+                description="Versioned endpoint",
+                path_params=[],
+                query_params=[
+                    ParamDef(
+                        name="x-api-version",
+                        required=True,
+                        schema={"type": "string"},
+                        description="API version query param",
+                    )
+                ],
+                body_schema=None,
+            )
+            register_tool(mcp, operation, client)
+
+            with respx.mock:
+                route = respx.get(f"{BASE_URL}/versioned").mock(
+                    return_value=httpx.Response(200, text="ok")
+                )
+                result = await call(mcp, "versioned_get2", {"x-api-version": "2024-01"})
+
+        assert route.called
+        url_str = str(route.calls.last.request.url)
+        assert "x-api-version=2024-01" in url_str
+        assert result == "ok"
+
+
+class TestQueryParamNamedRequestBody:
+    """Regression: a query param named 'request_body' with no body schema must
+    be forwarded as a query string parameter and not silently dropped."""
+
+    @pytest.mark.asyncio
+    async def test_query_param_named_request_body_forwarded(self):
+        """A query param literally named 'request_body' must reach the server."""
+        mcp = make_mcp()
+        async with make_client() as client:
+            operation = OperationDef(
+                tool_name="search_with_request_body_param",
+                method="get",
+                path="/search",
+                description="Search endpoint with an unusual param name",
+                path_params=[],
+                query_params=[
+                    ParamDef(
+                        name="request_body",
+                        required=False,
+                        schema={"type": "string"},
+                        description="Unusual param name that was previously a collision",
+                    )
+                ],
+                body_schema=None,  # No body — has_body is False.
+            )
+            register_tool(mcp, operation, client)
+
+            with respx.mock:
+                route = respx.get(f"{BASE_URL}/search").mock(
+                    return_value=httpx.Response(200, text='{"results":[]}')
+                )
+                result = await call(
+                    mcp,
+                    "search_with_request_body_param",
+                    {"request_body": "my-filter"},
+                )
+
+        assert route.called
+        url_str = str(route.calls.last.request.url)
+        # The param must appear in the query string, not be silently dropped.
+        assert "request_body=my-filter" in url_str
+        assert result == '{"results":[]}'
