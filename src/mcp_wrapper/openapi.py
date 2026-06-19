@@ -123,6 +123,48 @@ def _parse_yaml_bytes(raw: bytes) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_refs(schema: dict, schemas: dict, _seen: frozenset | None = None) -> dict:
+    """Recursively resolve ``$ref`` pointers within a JSON Schema fragment.
+
+    Only resolves internal refs of the form ``#/components/schemas/{Name}``.
+    External refs and unresolvable refs are returned as-is.  Circular references
+    are broken by tracking visited schema names in *_seen*.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    if _seen is None:
+        _seen = frozenset()
+
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+        name = ref.removeprefix("#/components/schemas/")
+        if name in _seen:
+            return schema  # cycle — leave ref in place
+        target = schemas.get(name)
+        if isinstance(target, dict):
+            return _resolve_refs(target, schemas, _seen | {name})
+        return schema  # schema name not found — leave ref in place
+
+    result = {}
+    for key, value in schema.items():
+        if key == "properties" and isinstance(value, dict):
+            result[key] = {
+                k: _resolve_refs(v, schemas, _seen) if isinstance(v, dict) else v
+                for k, v in value.items()
+            }
+        elif key in ("allOf", "anyOf", "oneOf", "prefixItems") and isinstance(value, list):
+            result[key] = [
+                _resolve_refs(item, schemas, _seen) if isinstance(item, dict) else item
+                for item in value
+            ]
+        elif key in ("items", "additionalProperties", "not") and isinstance(value, dict):
+            result[key] = _resolve_refs(value, schemas, _seen)
+        else:
+            result[key] = value
+    return result
+
+
 def parse_operations(spec: dict) -> list[OperationDef]:
     """Extract all HTTP operations from an OpenAPI spec dict.
 
@@ -133,8 +175,11 @@ def parse_operations(spec: dict) -> list[OperationDef]:
     Parameters can be defined at path level and/or operation level.  Operation-
     level parameters shadow path-level parameters with the same (name, in) key.
 
+    ``$ref`` pointers within parameter and body schemas are resolved against
+    ``spec["components"]["schemas"]`` before being stored on OperationDef.
+
     Args:
-        spec: A raw OpenAPI 3.x spec as a Python dict (refs are NOT resolved).
+        spec: A raw OpenAPI 3.x spec as a Python dict.
 
     Returns:
         A list of OperationDef, one per valid HTTP operation found in the spec.
@@ -142,6 +187,13 @@ def parse_operations(spec: dict) -> list[OperationDef]:
     paths = spec.get("paths")
     if not isinstance(paths, dict):
         return []
+
+    schemas: dict = {}
+    components = spec.get("components")
+    if isinstance(components, dict):
+        raw_schemas = components.get("schemas")
+        if isinstance(raw_schemas, dict):
+            schemas = raw_schemas
 
     operations: list[OperationDef] = []
 
@@ -160,7 +212,7 @@ def parse_operations(spec: dict) -> list[OperationDef]:
                 continue  # malformed operation entry — skip
 
             try:
-                op_def = _build_operation(path_str, method, operation, path_level_params)
+                op_def = _build_operation(path_str, method, operation, path_level_params, schemas)
             except Exception:  # noqa: BLE001
                 continue  # defensive: skip on any unexpected error
 
@@ -174,6 +226,7 @@ def _build_operation(
     method: str,
     operation: dict,
     path_level_params: list[dict],
+    schemas: dict,
 ) -> OperationDef:
     """Build a single OperationDef from a parsed OpenAPI operation object."""
     tool_name = _derive_tool_name(method, path_str, operation.get("operationId"))
@@ -189,10 +242,11 @@ def _build_operation(
         if not isinstance(param, dict):
             continue
         location = param.get("in", "")
+        raw_schema = param.get("schema") or {}
         param_def = ParamDef(
             name=param.get("name", ""),
             required=bool(param.get("required", False)),
-            schema=param.get("schema") or {},
+            schema=_resolve_refs(raw_schema, schemas),
             description=param.get("description") or "",
         )
         if location == "path":
@@ -200,7 +254,7 @@ def _build_operation(
         elif location == "query":
             query_params.append(param_def)
 
-    body_schema = _extract_body_schema(operation)
+    body_schema = _extract_body_schema(operation, schemas)
 
     return OperationDef(
         tool_name=tool_name,
@@ -259,8 +313,8 @@ def _merge_params(
     return list(result.values())
 
 
-def _extract_body_schema(operation: dict) -> dict | None:
-    """Return the JSON Schema for the application/json request body, or None."""
+def _extract_body_schema(operation: dict, schemas: dict) -> dict | None:
+    """Return the resolved JSON Schema for the application/json request body, or None."""
     request_body = operation.get("requestBody")
     if not isinstance(request_body, dict):
         return None
@@ -274,4 +328,6 @@ def _extract_body_schema(operation: dict) -> dict | None:
         return None
 
     schema = json_content.get("schema")
-    return schema if isinstance(schema, dict) else None
+    if not isinstance(schema, dict):
+        return None
+    return _resolve_refs(schema, schemas)
