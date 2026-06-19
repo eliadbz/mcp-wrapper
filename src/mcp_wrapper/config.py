@@ -58,7 +58,7 @@ class ServerConfig(BaseModel):
     name: str
     openapi_url: str
     base_url: str
-    auth: AuthConfig
+    auth: AuthConfig | None = None
 
 
 class AppConfig(BaseModel):

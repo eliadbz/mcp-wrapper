@@ -32,7 +32,9 @@ def build_client(server_config: ServerConfig) -> httpx.AsyncClient:
     headers: dict[str, str] = {}
     auth: httpx.BasicAuth | None = None
 
-    if isinstance(server_config.auth, BearerAuthConfig):
+    if server_config.auth is None:
+        pass
+    elif isinstance(server_config.auth, BearerAuthConfig):
         headers["Authorization"] = f"Bearer {server_config.auth.token}"
     elif isinstance(server_config.auth, ApiKeyAuthConfig):
         headers[server_config.auth.header] = server_config.auth.value

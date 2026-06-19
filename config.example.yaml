@@ -25,3 +25,8 @@ servers:
       type: basic
       username: "your-username"
       password: "your-password"
+
+  # Example 4: No auth (public API)
+  public-api:
+    openapi_url: "http://public-api/openapi.json"
+    base_url: "http://public-api"
