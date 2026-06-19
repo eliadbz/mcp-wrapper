@@ -598,7 +598,7 @@ class TestFailedServerDoesNotBlockOthers:
                     # server1 is mounted.
                     from starlette.routing import Mount
                     mount_paths = {r.path for r in mod.app.routes if isinstance(r, Mount)}
-                    assert "/servers/server1/mcp" in mount_paths, (
+                    assert "/servers/server1" in mount_paths, (
                         "server1 must be mounted even though server2 failed"
                     )
 
@@ -621,7 +621,7 @@ class TestFailedServerDoesNotBlockOthers:
                 with TestClient(mod.app) as _:
                     from starlette.routing import Mount
                     mount_paths = {r.path for r in mod.app.routes if isinstance(r, Mount)}
-                    assert "/servers/server2/mcp" not in mount_paths, (
+                    assert "/servers/server2" not in mount_paths, (
                         "server2 (which failed) must not have a mounted endpoint"
                     )
 
@@ -666,7 +666,7 @@ class TestServerRoutingViaApp:
     """Verify that the FastAPI app mounts each server at the correct path."""
 
     def test_two_servers_mounted_at_distinct_paths(self):
-        """server1 and server2 each get their own /servers/{id}/mcp mount."""
+        """server1 and server2 each get their own /servers/{id} mount (sub-app handles /mcp)."""
         mod = reload_main()
         config = make_test_app_config()
 
@@ -679,8 +679,8 @@ class TestServerRoutingViaApp:
                     from starlette.routing import Mount
                     mount_paths = {r.path for r in mod.app.routes if isinstance(r, Mount)}
 
-        assert "/servers/server1/mcp" in mount_paths
-        assert "/servers/server2/mcp" in mount_paths
+        assert "/servers/server1" in mount_paths
+        assert "/servers/server2" in mount_paths
 
     def test_single_server_config_mounts_one_endpoint(self):
         """A config with one server results in exactly one server mount."""
@@ -699,4 +699,4 @@ class TestServerRoutingViaApp:
                     ]
 
         assert len(server_mounts) == 1
-        assert server_mounts[0].path == "/servers/server1/mcp"
+        assert server_mounts[0].path == "/servers/server1"

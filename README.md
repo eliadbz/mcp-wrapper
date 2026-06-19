@@ -28,10 +28,10 @@ uv run uvicorn mcp_wrapper.main:app --host 0.0.0.0 --port 8000
 Connect your MCP client to:
 
 ```
-http://localhost:8000/servers/{server_id}/mcp/sse
+http://localhost:8000/servers/{server_id}/mcp
 ```
 
-Replace `{server_id}` with the key used for the server in `config.yaml`. FastMCP's SSE transport serves the event stream at the `/sse` suffix of the mounted path.
+Replace `{server_id}` with the key used for the server in `config.yaml`. Uses the MCP Streamable HTTP transport (POST to `/mcp`).
 
 ## Config schema
 

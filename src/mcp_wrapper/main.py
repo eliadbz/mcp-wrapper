@@ -1,7 +1,8 @@
 """Top-level FastAPI application for mcp-wrapper.
 
 Reads config.yaml at startup, creates one FastMCP instance per configured
-server, and mounts each SSE ASGI app at /servers/{server_id}/mcp.
+server, and mounts each Streamable HTTP ASGI app at /servers/{server_id}
+(endpoint: /servers/{server_id}/mcp).
 
 Entry point:
     uv run uvicorn mcp_wrapper.main:app --host 0.0.0.0 --port 8000
@@ -11,10 +12,11 @@ from __future__ import annotations
 
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from mcp_wrapper.config import load_config
 from mcp_wrapper.server import build_mcp_server
@@ -47,30 +49,31 @@ async def lifespan(app: FastAPI):
 
     clients: dict[str, httpx.AsyncClient] = {}
 
-    for server_id, server_config in config.servers.items():
-        result = await build_mcp_server(server_config)
-        if result is None:
-            logger.warning(
-                "Skipping server %r — build_mcp_server returned None",
-                server_id,
-            )
-            continue
+    async with AsyncExitStack() as stack:
+        for server_id, server_config in config.servers.items():
+            result = await build_mcp_server(server_config)
+            if result is None:
+                logger.warning(
+                    "Skipping server %r — build_mcp_server returned None",
+                    server_id,
+                )
+                continue
 
-        mcp, client = result
-        clients[server_id] = client
-        mount_path = f"/servers/{server_id}/mcp"
-        app.mount(mount_path, mcp.sse_app())
-        logger.info("Mounted server %r at %s", server_id, mount_path)
+            mcp, client = result
+            clients[server_id] = client
+            sub_app = mcp.streamable_http_app()
+            await stack.enter_async_context(mcp.session_manager.run())
+            mount_path = f"/servers/{server_id}"
+            app.mount(mount_path, sub_app)
+            logger.info("Mounted server %r at %s/mcp", server_id, mount_path)
 
-    yield  # application is running
+        yield  # application is running
 
-    # Shutdown — close every HTTP client in reverse order.
-    for server_id, client in clients.items():
-        try:
-            await client.aclose()
-            logger.debug("Closed HTTP client for server %r", server_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Error closing client for server %r: %s", server_id, exc)
+        for server_id, client in clients.items():
+            try:
+                await client.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error closing client for server %r: %s", server_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,13 @@ app = FastAPI(
     description="Proxies third-party REST APIs as MCP tools over SSE.",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

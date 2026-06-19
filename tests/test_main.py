@@ -121,7 +121,7 @@ class TestServerMounting:
     """
 
     def test_server_mounted_at_correct_path(self):
-        """A successfully built server should be mounted at /servers/{id}/mcp."""
+        """A successfully built server should be mounted at /servers/{id}."""
         mod = reload_main()
         mock_config = make_mock_app_config(["petstore"])
         mcp_instance, mock_client = make_mock_build_result("petstore")
@@ -139,7 +139,7 @@ class TestServerMounting:
 
                 # Verify the Mount is registered in the router.
                 mount_paths = [r.path for r in mod.app.routes if isinstance(r, Mount)]
-                assert "/servers/petstore/mcp" in mount_paths
+                assert "/servers/petstore" in mount_paths
 
     def test_multiple_servers_mounted(self):
         """Multiple servers should each be mounted at their own paths."""
@@ -163,11 +163,11 @@ class TestServerMounting:
                 assert response.status_code == 200
 
                 mount_paths = [r.path for r in mod.app.routes if isinstance(r, Mount)]
-                assert "/servers/alpha/mcp" in mount_paths
-                assert "/servers/beta/mcp" in mount_paths
+                assert "/servers/alpha" in mount_paths
+                assert "/servers/beta" in mount_paths
 
     def test_mount_path_format(self):
-        """Mount path must follow /servers/{server_id}/mcp format exactly."""
+        """Mount path must follow /servers/{server_id} format exactly."""
         mod = reload_main()
         mock_config = make_mock_app_config(["my-api"])
         mcp_instance, mock_client = make_mock_build_result("my-api")
@@ -181,7 +181,7 @@ class TestServerMounting:
         ):
             with TestClient(mod.app):
                 mount_paths = [r.path for r in mod.app.routes if isinstance(r, Mount)]
-                assert "/servers/my-api/mcp" in mount_paths
+                assert "/servers/my-api" in mount_paths
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ class TestFailedServerSkipped:
         ):
             with TestClient(mod.app):
                 mount_paths = [r.path for r in mod.app.routes if isinstance(r, Mount)]
-                assert "/servers/bad-server/mcp" not in mount_paths
+                assert "/servers/bad-server" not in mount_paths
 
     def test_one_failed_one_success_only_success_mounted(self):
         """With one failing and one succeeding server, only the successful one is mounted."""
@@ -242,8 +242,8 @@ class TestFailedServerSkipped:
                 assert response.status_code == 200
 
                 mount_paths = [r.path for r in mod.app.routes if isinstance(r, Mount)]
-                assert "/servers/good/mcp" in mount_paths
-                assert "/servers/bad/mcp" not in mount_paths
+                assert "/servers/good" in mount_paths
+                assert "/servers/bad" not in mount_paths
 
     def test_all_servers_fail_zero_mounts(self):
         """When every server fails, zero mounts are added and health still returns 200."""

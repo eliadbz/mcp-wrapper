@@ -45,7 +45,7 @@ async def build_mcp_server(
         the server cannot be initialized due to a fetch or parse failure.
         The caller is responsible for closing the returned client.
     """
-    mcp = FastMCP(server_config.name)
+    mcp = FastMCP(server_config.name, stateless_http=True)
 
     # build_client can raise ValueError for unrecognised auth types.
     # Treat that the same as a fetch failure: log and return None.
