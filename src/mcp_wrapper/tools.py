@@ -17,6 +17,7 @@ import httpx
 from pydantic import ConfigDict, Field, create_model
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase, FuncMetadata
+from mcp.types import ToolAnnotations
 
 from mcp_wrapper.openapi import OperationDef
 
@@ -286,3 +287,6 @@ def register_tool(
             )
             new_fn_metadata = FuncMetadata(arg_model=new_arg_model)
             object.__setattr__(registered_tool, "fn_metadata", new_fn_metadata)
+
+        if readonly:
+            object.__setattr__(registered_tool, "annotations", ToolAnnotations(readOnlyHint=True))

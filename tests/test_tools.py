@@ -855,3 +855,79 @@ class TestOptionalQueryParamOmittedWhenNone:
         assert "page" not in url_str
         assert "?" not in url_str
         assert result == '{"id":"123"}'
+
+
+# ---------------------------------------------------------------------------
+# Readonly annotation tests
+# ---------------------------------------------------------------------------
+
+
+from mcp.types import ToolAnnotations
+
+
+class TestReadonlyAnnotation:
+    def _make_get_op(self) -> "OperationDef":
+        return OperationDef(
+            tool_name="get_items",
+            method="get",
+            path="/items",
+            description="List items",
+            path_params=[],
+            query_params=[],
+            body_schema=None,
+        )
+
+    def _make_post_op(self) -> "OperationDef":
+        return OperationDef(
+            tool_name="search_items",
+            method="post",
+            path="/search",
+            description="Search items",
+            path_params=[],
+            query_params=[],
+            body_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+        )
+
+    def _get_tool(self, mcp: FastMCP, name: str):
+        return mcp._tool_manager.get_tool(name)
+
+    def test_readonly_true_sets_read_only_hint(self):
+        mcp = make_mcp()
+        client = make_client()
+        op = self._make_get_op()
+        register_tool(mcp, op, client, readonly=True)
+        tool = self._get_tool(mcp, "get_items")
+        assert tool is not None
+        assert isinstance(tool.annotations, ToolAnnotations)
+        assert tool.annotations.readOnlyHint is True
+
+    def test_readonly_false_does_not_set_annotation(self):
+        mcp = make_mcp()
+        client = make_client()
+        op = self._make_get_op()
+        register_tool(mcp, op, client, readonly=False)
+        tool = self._get_tool(mcp, "get_items")
+        assert tool is not None
+        # annotations may be None or a ToolAnnotations without readOnlyHint set
+        if tool.annotations is not None:
+            assert tool.annotations.readOnlyHint is not True
+
+    def test_readonly_default_does_not_set_annotation(self):
+        mcp = make_mcp()
+        client = make_client()
+        op = self._make_get_op()
+        register_tool(mcp, op, client)  # no readonly kwarg
+        tool = self._get_tool(mcp, "get_items")
+        assert tool is not None
+        if tool.annotations is not None:
+            assert tool.annotations.readOnlyHint is not True
+
+    def test_readonly_true_on_post_with_body(self):
+        mcp = make_mcp()
+        client = make_client()
+        op = self._make_post_op()
+        register_tool(mcp, op, client, readonly=True)
+        tool = self._get_tool(mcp, "search_items")
+        assert tool is not None
+        assert isinstance(tool.annotations, ToolAnnotations)
+        assert tool.annotations.readOnlyHint is True
