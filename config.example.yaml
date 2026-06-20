@@ -30,3 +30,25 @@ servers:
   public-api:
     openapi_url: "http://public-api/openapi.json"
     base_url: "http://public-api"
+
+  # Example 5: Readonly server (filters out POST/PUT/PATCH/DELETE, annotates tools with readOnlyHint)
+  readonly-api:
+    openapi_url: "http://readonly-api/openapi.json"
+    base_url: "http://readonly-api"
+    auth:
+      type: bearer
+      token: "your-bearer-token-here"
+    readonly: true
+
+  # Example 6: Readonly server with overrides (include specific POST endpoints as readonly)
+  search-api:
+    openapi_url: "http://search-api/openapi.json"
+    base_url: "http://search-api"
+    auth:
+      type: api_key
+      header: "X-API-Key"
+      value: "your-api-key-here"
+    readonly: true
+    readonly_overrides:
+      - search_users          # by tool name / operationId
+      - "POST /api/search"    # by HTTP method + path (method must be uppercase)
