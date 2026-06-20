@@ -499,7 +499,7 @@ class TestReadonlyFilter:
         op = _make_op("post", "/search", "post_search")
         assert _should_include_operation(op, config) is True
 
-    def test_override_endpoint_method_case_insensitive(self):
+    def test_override_endpoint_matches_lowercase_stored_method(self):
         config = _make_readonly_config(overrides=["POST /search"])
         op = _make_op("post", "/search", "any_name")
         assert _should_include_operation(op, config) is True
