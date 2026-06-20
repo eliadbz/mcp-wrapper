@@ -59,6 +59,8 @@ class ServerConfig(BaseModel):
     openapi_url: str
     base_url: str
     auth: AuthConfig | None = None
+    readonly: bool = False
+    readonly_overrides: list[str] = []
 
 
 class AppConfig(BaseModel):

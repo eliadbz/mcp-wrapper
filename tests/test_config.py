@@ -321,3 +321,52 @@ class TestLoadConfig:
         """load_config must raise an error for a nonexistent file."""
         with pytest.raises((FileNotFoundError, OSError)):
             load_config(tmp_path / "nonexistent.yaml")
+
+
+# ---------------------------------------------------------------------------
+# ServerConfig readonly tests
+# ---------------------------------------------------------------------------
+
+
+class TestServerConfigReadonly:
+    def _base_server(self, **kwargs) -> dict:
+        return {
+            "name": "svc",
+            "openapi_url": "http://svc/openapi.json",
+            "base_url": "http://svc",
+            **kwargs,
+        }
+
+    def test_readonly_defaults_to_false(self):
+        server = ServerConfig(**self._base_server())
+        assert server.readonly is False
+
+    def test_readonly_overrides_defaults_to_empty_list(self):
+        server = ServerConfig(**self._base_server())
+        assert server.readonly_overrides == []
+
+    def test_readonly_true_accepted(self):
+        server = ServerConfig(**self._base_server(readonly=True))
+        assert server.readonly is True
+
+    def test_readonly_overrides_list_accepted(self):
+        overrides = ["search_users", "POST /api/search"]
+        server = ServerConfig(**self._base_server(readonly_overrides=overrides))
+        assert server.readonly_overrides == overrides
+
+    def test_readonly_round_trips_through_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "servers:\n"
+            "  api:\n"
+            "    openapi_url: http://api/openapi.json\n"
+            "    base_url: http://api\n"
+            "    readonly: true\n"
+            "    readonly_overrides:\n"
+            "      - search_items\n"
+            "      - POST /api/search\n"
+        )
+        cfg = load_config(path)
+        server = cfg.servers["api"]
+        assert server.readonly is True
+        assert server.readonly_overrides == ["search_items", "POST /api/search"]
