@@ -15,7 +15,7 @@ import respx
 from mcp.server.fastmcp import FastMCP
 
 from mcp_wrapper.config import BearerAuthConfig, ServerConfig
-from mcp_wrapper.server import build_mcp_server
+from mcp_wrapper.server import build_mcp_server, _should_include_operation, _matches_readonly_override
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ class TestBuildMcpServerToolRegistrationFailure:
 
         call_count = 0
 
-        def register_tool_side_effect(mcp, operation, client):
+        def register_tool_side_effect(mcp, operation, client, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -335,7 +335,7 @@ class TestBuildMcpServerToolRegistrationFailure:
 
         call_count = 0
 
-        def failing_first_register(mcp, operation, client):
+        def failing_first_register(mcp, operation, client, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -418,3 +418,109 @@ class TestBuildMcpServerClientLifecycle:
         mcp, client = result
         assert not client.is_closed
         await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Readonly filter helpers
+# ---------------------------------------------------------------------------
+
+def _make_op(method: str, path: str, tool_name: str) -> "OperationDef":
+    """Build a minimal OperationDef for filter tests."""
+    from mcp_wrapper.openapi import OperationDef
+    return OperationDef(
+        tool_name=tool_name,
+        method=method,
+        path=path,
+        description="",
+        path_params=[],
+        query_params=[],
+        body_schema=None,
+    )
+
+
+def _make_readonly_config(readonly: bool = True, overrides: list[str] | None = None) -> ServerConfig:
+    return ServerConfig(
+        name="svc",
+        openapi_url="http://svc/openapi.json",
+        base_url="http://svc",
+        readonly=readonly,
+        readonly_overrides=overrides or [],
+    )
+
+
+class TestReadonlyFilter:
+    def test_non_readonly_server_includes_all(self):
+        config = _make_readonly_config(readonly=False)
+        post_op = _make_op("post", "/items", "create_item")
+        assert _should_include_operation(post_op, config) is True
+
+    def test_readonly_server_includes_get(self):
+        config = _make_readonly_config()
+        op = _make_op("get", "/users", "list_users")
+        assert _should_include_operation(op, config) is True
+
+    def test_readonly_server_includes_head(self):
+        config = _make_readonly_config()
+        op = _make_op("head", "/users", "head_users")
+        assert _should_include_operation(op, config) is True
+
+    def test_readonly_server_includes_options(self):
+        config = _make_readonly_config()
+        op = _make_op("options", "/users", "options_users")
+        assert _should_include_operation(op, config) is True
+
+    def test_readonly_server_excludes_post(self):
+        config = _make_readonly_config()
+        op = _make_op("post", "/items", "create_item")
+        assert _should_include_operation(op, config) is False
+
+    def test_readonly_server_excludes_put(self):
+        config = _make_readonly_config()
+        op = _make_op("put", "/items/1", "update_item")
+        assert _should_include_operation(op, config) is False
+
+    def test_readonly_server_excludes_patch(self):
+        config = _make_readonly_config()
+        op = _make_op("patch", "/items/1", "patch_item")
+        assert _should_include_operation(op, config) is False
+
+    def test_readonly_server_excludes_delete(self):
+        config = _make_readonly_config()
+        op = _make_op("delete", "/items/1", "delete_item")
+        assert _should_include_operation(op, config) is False
+
+    def test_override_by_tool_name_includes_post(self):
+        config = _make_readonly_config(overrides=["search_items"])
+        op = _make_op("post", "/search", "search_items")
+        assert _should_include_operation(op, config) is True
+
+    def test_override_by_endpoint_format_includes_post(self):
+        config = _make_readonly_config(overrides=["POST /search"])
+        op = _make_op("post", "/search", "post_search")
+        assert _should_include_operation(op, config) is True
+
+    def test_override_endpoint_method_case_insensitive(self):
+        config = _make_readonly_config(overrides=["POST /search"])
+        op = _make_op("post", "/search", "any_name")
+        assert _should_include_operation(op, config) is True
+
+    def test_override_no_match_still_excluded(self):
+        config = _make_readonly_config(overrides=["search_items"])
+        op = _make_op("post", "/other", "create_other")
+        assert _should_include_operation(op, config) is False
+
+    def test_matches_readonly_override_by_tool_name(self):
+        op = _make_op("post", "/search", "search_items")
+        assert _matches_readonly_override(op, ["search_items"]) is True
+
+    def test_matches_readonly_override_by_endpoint(self):
+        op = _make_op("post", "/search", "search_items")
+        assert _matches_readonly_override(op, ["POST /search"]) is True
+
+    def test_matches_readonly_override_no_match(self):
+        op = _make_op("post", "/search", "search_items")
+        assert _matches_readonly_override(op, ["other_tool", "GET /users"]) is False
+
+    def test_matches_readonly_override_empty_list(self):
+        op = _make_op("post", "/search", "search_items")
+        assert _matches_readonly_override(op, []) is False

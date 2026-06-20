@@ -191,6 +191,7 @@ def register_tool(
     mcp: FastMCP,
     operation: OperationDef,
     client: httpx.AsyncClient,
+    readonly: bool = False,
 ) -> None:
     """Register one MCP tool on the given FastMCP instance for the given operation.
 

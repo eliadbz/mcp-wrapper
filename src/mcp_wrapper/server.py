@@ -20,6 +20,37 @@ from mcp_wrapper.tools import register_tool
 
 logger = logging.getLogger(__name__)
 
+_READONLY_METHODS = frozenset({"get", "head", "options"})
+_HTTP_METHODS_UPPER = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+
+
+def _matches_readonly_override(op: OperationDef, overrides: list[str]) -> bool:
+    """Return True if op matches any entry in overrides.
+
+    Each entry is either a bare tool name (e.g. "search_users") or an
+    endpoint string in "METHOD /path" format (e.g. "POST /api/search").
+    Detection: split on the first space — if the left part is an uppercase
+    HTTP method keyword, treat it as endpoint format; otherwise tool name.
+    """
+    for entry in overrides:
+        parts = entry.split(" ", 1)
+        if len(parts) == 2 and parts[0] in _HTTP_METHODS_UPPER:
+            if op.method == parts[0].lower() and op.path == parts[1]:
+                return True
+        else:
+            if op.tool_name == entry:
+                return True
+    return False
+
+
+def _should_include_operation(op: OperationDef, config: ServerConfig) -> bool:
+    """Return True if op should be registered on a readonly-filtered server."""
+    if not config.readonly:
+        return True
+    if op.method in _READONLY_METHODS:
+        return True
+    return _matches_readonly_override(op, config.readonly_overrides)
+
 
 async def build_mcp_server(
     server_config: ServerConfig,
@@ -89,8 +120,10 @@ async def build_mcp_server(
     # Register each operation as an MCP tool.  Individual failures are logged
     # and skipped; one bad operation should never abort the whole server.
     for operation in operations:
+        if not _should_include_operation(operation, server_config):
+            continue
         try:
-            register_tool(mcp, operation, client)
+            register_tool(mcp, operation, client, readonly=server_config.readonly)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to register tool %r for server %r: %s",
