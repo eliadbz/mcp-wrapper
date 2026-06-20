@@ -80,6 +80,63 @@ BASE_URL2 = "http://api2.test"
 TOKEN1 = "bearer-token-server1"
 TOKEN2 = "bearer-token-server2"
 
+SPEC_MIXED = {
+    "openapi": "3.0.0",
+    "info": {"title": "Mixed API", "version": "1.0"},
+    "paths": {
+        "/users": {
+            "get": {
+                "operationId": "list_users",
+                "summary": "List users",
+                "responses": {"200": {"description": "ok"}},
+            },
+            "options": {
+                "operationId": "options_users",
+                "summary": "Options for users",
+                "responses": {"200": {"description": "ok"}},
+            },
+        },
+        "/users/{id}": {
+            "get": {
+                "operationId": "get_user",
+                "summary": "Get user",
+                "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "ok"}},
+            },
+            "delete": {
+                "operationId": "delete_user",
+                "summary": "Delete user",
+                "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                "responses": {"204": {"description": "deleted"}},
+            },
+        },
+        "/search": {
+            "post": {
+                "operationId": "search_users",
+                "summary": "Search users",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+                        }
+                    }
+                },
+                "responses": {"200": {"description": "ok"}},
+            }
+        },
+        "/items": {
+            "post": {
+                "operationId": "create_item",
+                "summary": "Create item",
+                "responses": {"201": {"description": "created"}},
+            }
+        },
+    },
+}
+
+MIXED_OPENAPI_URL = "http://mixed-api.test/openapi.json"
+MIXED_BASE_URL = "http://mixed-api.test"
+
 
 def make_server_config(
     name: str,
@@ -93,6 +150,21 @@ def make_server_config(
         openapi_url=openapi_url,
         base_url=base_url,
         auth=BearerAuthConfig(type="bearer", token=token),
+    )
+
+
+def make_readonly_server_config(
+    name: str = "mixed",
+    readonly: bool = True,
+    readonly_overrides: list[str] | None = None,
+) -> ServerConfig:
+    """Return a ServerConfig with readonly settings and no auth."""
+    return ServerConfig(
+        name=name,
+        openapi_url=MIXED_OPENAPI_URL,
+        base_url=MIXED_BASE_URL,
+        readonly=readonly,
+        readonly_overrides=readonly_overrides or [],
     )
 
 
@@ -700,3 +772,96 @@ class TestServerRoutingViaApp:
 
         assert len(server_mounts) == 1
         assert server_mounts[0].path == "/servers/server1"
+
+
+# ---------------------------------------------------------------------------
+# Readonly server tests
+# ---------------------------------------------------------------------------
+
+
+class TestReadonlyServer:
+    """Verify readonly config filters operations and annotates tools correctly."""
+
+    async def _build(self, config: ServerConfig):
+        with respx.mock:
+            respx.get(MIXED_OPENAPI_URL).mock(
+                return_value=httpx.Response(200, json=SPEC_MIXED)
+            )
+            result = await build_mcp_server(config)
+        assert result is not None, "build_mcp_server returned None"
+        mcp, client = result
+        await client.aclose()
+        return mcp
+
+    async def test_readonly_server_excludes_write_ops(self):
+        """POST and DELETE ops are filtered; GET and OPTIONS are kept."""
+        config = make_readonly_server_config()
+        mcp = await self._build(config)
+        names = tool_names(mcp)
+        assert "list_users" in names
+        assert "get_user" in names
+        assert "options_users" in names
+        assert "delete_user" not in names
+        assert "create_item" not in names
+        assert "search_users" not in names
+
+    async def test_readonly_server_get_tool_has_read_only_hint(self):
+        """GET tools on a readonly server have readOnlyHint=True."""
+        from mcp.types import ToolAnnotations
+        config = make_readonly_server_config()
+        mcp = await self._build(config)
+        tool = mcp._tool_manager.get_tool("list_users")
+        assert tool is not None
+        assert isinstance(tool.annotations, ToolAnnotations)
+        assert tool.annotations.readOnlyHint is True
+
+    async def test_readonly_override_by_tool_name_includes_post(self):
+        """A POST op listed in readonly_overrides by tool name is included."""
+        config = make_readonly_server_config(readonly_overrides=["search_users"])
+        mcp = await self._build(config)
+        names = tool_names(mcp)
+        assert "search_users" in names
+        assert "create_item" not in names  # not in overrides
+
+    async def test_readonly_override_by_tool_name_has_read_only_hint(self):
+        """A POST op included via readonly_overrides by tool name has readOnlyHint."""
+        from mcp.types import ToolAnnotations
+        config = make_readonly_server_config(readonly_overrides=["search_users"])
+        mcp = await self._build(config)
+        tool = mcp._tool_manager.get_tool("search_users")
+        assert tool is not None
+        assert isinstance(tool.annotations, ToolAnnotations)
+        assert tool.annotations.readOnlyHint is True
+
+    async def test_readonly_override_by_endpoint_includes_post(self):
+        """A POST op listed in readonly_overrides as 'POST /path' is included."""
+        config = make_readonly_server_config(readonly_overrides=["POST /search"])
+        mcp = await self._build(config)
+        names = tool_names(mcp)
+        assert "search_users" in names
+        assert "create_item" not in names
+
+    async def test_non_readonly_server_includes_all_ops(self):
+        """Without readonly=True, all ops are registered regardless of method."""
+        config = make_readonly_server_config(readonly=False)
+        mcp = await self._build(config)
+        names = tool_names(mcp)
+        assert "list_users" in names
+        assert "delete_user" in names
+        assert "create_item" in names
+        assert "search_users" in names
+
+    async def test_non_readonly_server_get_tool_has_no_read_only_hint(self):
+        """GET tools on a non-readonly server do not get readOnlyHint."""
+        config = make_readonly_server_config(readonly=False)
+        mcp = await self._build(config)
+        tool = mcp._tool_manager.get_tool("list_users")
+        assert tool is not None
+        if tool.annotations is not None:
+            assert tool.annotations.readOnlyHint is not True
+
+    async def test_readonly_server_options_included_without_override(self):
+        """OPTIONS ops are included on a readonly server without needing an override."""
+        config = make_readonly_server_config()
+        mcp = await self._build(config)
+        assert "options_users" in tool_names(mcp)
